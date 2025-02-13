@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+wasmbin= "0.8"
+
+[dev-dependencies]
+wat = "1.225.0"
