@@ -1,6 +1,8 @@
+use std::mem::take;
+
 use wasmbin::sections::{
     self, ExportDesc, FuncBody,
-    payload::{Code, Export},
+    payload::{Code, Export, Function},
 };
 
 /// Aggregates the data from multiple WASM modules.
@@ -8,7 +10,8 @@ use wasmbin::sections::{
 /// Once this struct is fully populated, it is passed to the interpreter.
 // Data stored here must be in a format that is ready to use by the interpreter.
 pub struct Store {
-    module: wasmbin::Module,
+    funcs: Vec<FuncBody>,
+    exports: Vec<sections::Export>,
     // funcs: Vec<FuncInst>,
     // tables: Vec<TableInst>,
     // mems: Vec<MemInst>,
@@ -41,9 +44,27 @@ struct DataInst;
 struct ModuleInst;
 
 impl Store {
-    pub(crate) fn new(module: wasmbin::Module) -> Self {
+    pub(crate) fn new(mut module: wasmbin::Module) -> Self {
+        let code_section = module.find_std_section_mut::<Code>().unwrap();
+
+        let funcs = code_section
+            .try_contents_mut()
+            .unwrap()
+            .iter_mut()
+            .map(|body| body.try_contents_mut().unwrap())
+            .map(take)
+            .collect();
+
+        let exports = module
+            .find_std_section_mut::<Export>()
+            .unwrap()
+            .try_contents_mut()
+            .map(take)
+            .unwrap();
+
         Self {
-            module,
+            funcs,
+            exports,
             // funcs: todo!(),
             // tables: todo!(),
             // mems: todo!(),
@@ -54,9 +75,8 @@ impl Store {
     }
 
     pub(crate) fn find_function(&self, sym_name: &str) -> FuncBody {
-        let export_section = self.exports();
-
-        let desc = export_section
+        let desc = self
+            .exports
             .iter()
             .find_map(|export| {
                 if export.name == sym_name {
@@ -69,29 +89,6 @@ impl Store {
 
         let ExportDesc::Func(f) = desc else { panic!() };
 
-        let code_section = self.code();
-
-        code_section.get(f.index as usize).unwrap().clone()
-    }
-
-    fn exports(&self) -> &[sections::Export] {
-        self.module
-            .find_std_section::<Export>()
-            .unwrap()
-            .try_contents()
-            .unwrap()
-            .as_slice()
-    }
-
-    fn code(&self) -> Vec<FuncBody> {
-        // TODO: this is a very hot path, as we constantly decode every function.
-        self.module
-            .find_std_section::<Code>()
-            .unwrap()
-            .try_contents()
-            .unwrap()
-            .iter()
-            .map(|blob| blob.contents.clone().try_into_contents().unwrap())
-            .collect()
+        self.funcs.get(f.index as usize).unwrap().clone()
     }
 }
