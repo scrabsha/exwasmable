@@ -1,59 +1,43 @@
-use std::mem::take;
+use std::{iter::zip, mem::take, ops::Index};
 
-use wasmbin::sections::{
-    self, ExportDesc, FuncBody,
-    payload::{Code, Export, Function},
+use wasmbin::{
+    indices::{FuncId, TypeId},
+    sections::{
+        self, ExportDesc, FuncBody,
+        payload::{Code, Export, Function, Type},
+    },
+    types::FuncType,
 };
 
 /// Aggregates the data from multiple WASM modules.
 ///
 /// Once this struct is fully populated, it is passed to the interpreter.
 // Data stored here must be in a format that is ready to use by the interpreter.
+#[derive(Debug)]
 pub struct Store {
-    funcs: Vec<FuncBody>,
+    funcs: Vec<(TypeId, FuncBody)>,
     exports: Vec<sections::Export>,
-    // funcs: Vec<FuncInst>,
-    // tables: Vec<TableInst>,
-    // mems: Vec<MemInst>,
-    // globals: Vec<GlobalInst>,
-    // elems: Vec<ElemInst>,
-    // datas: Vec<DataInst>,
+    types: Vec<FuncType>,
 }
-
-// TODO: support host functions.
-// pub(crate) struct FuncInst {
-//     type_: FuncType,
-//     module: ModuleInst,
-// TODO: this _will_ need some conversion in the future.
-// code: Func,
-// }
-
-// pub(crate) struct TableInst {
-// type_: TableType,
-// elem: Vec<Ref>,
-// }
-
-struct MemInst;
-
-struct GlobalInst;
-
-struct ElemInst;
-
-struct DataInst;
-
-struct ModuleInst;
 
 impl Store {
     pub(crate) fn new(mut module: wasmbin::Module) -> Self {
-        let code_section = module.find_std_section_mut::<Code>().unwrap();
-
-        let funcs = code_section
+        let function_section = module.find_std_section_mut::<Function>().unwrap();
+        let function_section = function_section
             .try_contents_mut()
             .unwrap()
             .iter_mut()
-            .map(|body| body.try_contents_mut().unwrap())
-            .map(take)
-            .collect();
+            .map(|func_type| *func_type)
+            .collect::<Vec<_>>();
+
+        let code_section = module.find_std_section_mut::<Code>().unwrap();
+        let code_section = code_section
+            .try_contents_mut()
+            .unwrap()
+            .iter_mut()
+            .map(|body| take(body.try_contents_mut().unwrap()));
+
+        let funcs = zip(function_section, code_section).collect();
 
         let exports = module
             .find_std_section_mut::<Export>()
@@ -62,19 +46,18 @@ impl Store {
             .map(take)
             .unwrap();
 
-        Self {
+        let type_section = module.find_std_section_mut::<Type>().unwrap();
+
+        let types = type_section.try_contents_mut().unwrap().drain(..).collect();
+
+        Store {
             funcs,
             exports,
-            // funcs: todo!(),
-            // tables: todo!(),
-            // mems: todo!(),
-            // globals: todo!(),
-            // elems: todo!(),
-            // datas: todo!(),
+            types,
         }
     }
 
-    pub(crate) fn find_function(&self, sym_name: &str) -> FuncBody {
+    pub(crate) fn find_function(&self, sym_name: &str) -> &(TypeId, FuncBody) {
         let desc = self
             .exports
             .iter()
@@ -89,6 +72,21 @@ impl Store {
 
         let ExportDesc::Func(f) = desc else { panic!() };
 
-        self.funcs.get(f.index as usize).unwrap().clone()
+        self.funcs.get(f.index as usize).unwrap()
+    }
+}
+
+impl Index<FuncId> for Store {
+    type Output = (TypeId, FuncBody);
+    fn index(&self, func: FuncId) -> &Self::Output {
+        &self.funcs[func.index as usize]
+    }
+}
+
+impl Index<TypeId> for Store {
+    type Output = FuncType;
+
+    fn index(&self, type_: TypeId) -> &Self::Output {
+        &self.types[type_.index as usize]
     }
 }
