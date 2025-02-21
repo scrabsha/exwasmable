@@ -5,6 +5,7 @@ use std::{
     cmp::PartialOrd,
     convert::{From, TryFrom},
     fmt::Debug,
+    iter,
     mem::take,
     ops::{Add, Sub},
 };
@@ -12,8 +13,8 @@ use std::{
 use wasmbin::{
     indices::{FuncId, LocalId},
     instructions::{self, Instruction},
-    sections::FuncBody,
-    types::BlockType,
+    sections::{FuncBody, Locals},
+    types::{BlockType, ValueType},
 };
 
 use crate::{
@@ -34,6 +35,7 @@ pub enum ComputationStatus<'store> {
     Call(&'store FuncBody),
     ContinueToElse,
     ContinueToEnd,
+    Return,
     // TODO: interruption.
 }
 
@@ -48,7 +50,7 @@ pub struct Interpreter<'store> {
 #[derive(Debug)]
 struct InstructionRunner<'store> {
     stack: Vec<Val>,
-    locals: Vec<Vec<Val>>,
+    locals: Vec<Frame>,
     pub store: &'store Store,
 }
 
@@ -75,12 +77,8 @@ impl Interpreter<'_> {
 
         self.instr_stack.push((0, func_body));
 
-        assert!(
-            func_body.locals.is_empty(),
-            "Not yet implemented: function locals"
-        );
-
-        self.runner.push_frame(args);
+        self.runner
+            .push_frame(args, &func_body.locals, &func_type.results);
 
         loop {
             let (cursor, func) = match self.instr_stack.last_mut() {
@@ -89,7 +87,7 @@ impl Interpreter<'_> {
             };
 
             if *cursor >= func.expr.len() {
-                self.runner.return_();
+                self.runner.return_from_func();
                 self.instr_stack.pop();
                 continue;
             }
@@ -104,6 +102,8 @@ impl Interpreter<'_> {
                 Instruction::IfElse => self.runner.if_else(),
                 Instruction::I32Sub => self.runner.sub::<i32>(),
                 Instruction::End => self.runner.end(),
+                Instruction::LocalSet(local) => self.runner.local_set(*local),
+                Instruction::Return => self.runner.return_(),
 
                 unknown => unreachable!("unknown instruction: `{unknown:?}`"),
             }?;
@@ -120,6 +120,10 @@ impl Interpreter<'_> {
 
                 ComputationStatus::ContinueToEnd => {
                     *cursor = Self::continue_to(func, Instruction::End, *cursor);
+                }
+
+                ComputationStatus::Return => {
+                    self.instr_stack.pop().unwrap();
                 }
             }
         }
@@ -155,8 +159,26 @@ impl<'store> InstructionRunner<'store> {
         }
     }
 
-    fn push_frame(&mut self, locals: impl IntoIterator<Item = Val>) {
-        self.locals.push(locals.into_iter().collect());
+    fn push_frame(
+        &mut self,
+        arguments: impl IntoIterator<Item = Val>,
+        other_locals: &[Locals],
+        result: &[ValueType],
+    ) {
+        let locals = arguments
+            .into_iter()
+            .chain(other_locals.iter().flat_map(|Locals { repeat, ty }| {
+                iter::repeat_n(Val::default(ty), *repeat as usize)
+            }))
+            .collect();
+
+        let frame = Frame {
+            init_stack_size: self.stack.len(),
+            locals,
+            arity: result.len(),
+        };
+
+        self.locals.push(frame);
     }
 
     fn pop_frame(&mut self) {
@@ -188,12 +210,20 @@ impl<'store> InstructionRunner<'store> {
     fn call(&mut self, func: FuncId) -> Result<'store> {
         let (type_, function) = &self.store[func];
         let func_type = &self.store[*type_];
-        let new_locals = self
+        let locals = self
             .stack
             .drain(self.stack.len() - func_type.params.len()..)
             .collect();
 
-        self.locals.push(new_locals);
+        let init_stack_size = self.stack.len();
+
+        let frame = Frame {
+            locals,
+            init_stack_size,
+            arity: func_type.results.len(),
+        };
+
+        self.locals.push(frame);
 
         Ok(ComputationStatus::Call(function))
     }
@@ -244,6 +274,38 @@ impl<'store> InstructionRunner<'store> {
         Ok(ComputationStatus::ContinueToNext)
     }
 
+    fn local_set(&mut self, local: LocalId) -> Result<'store> {
+        let top = self.stack.pop().unwrap();
+
+        *self
+            .locals
+            .last_mut()
+            .unwrap()
+            .locals
+            .get_mut(local.index as usize)
+            .unwrap() = top;
+
+        Ok(ComputationStatus::ContinueToNext)
+    }
+
+    fn return_(&mut self) -> Result<'store> {
+        let old_frame = self.locals.pop().unwrap();
+        let result_last = self.stack.len();
+        let result_first = result_last - old_frame.arity;
+        let result = self
+            .stack
+            .drain(result_first..result_last)
+            .collect::<Vec<_>>();
+
+        // Let's just check that the maths are mathing.
+        debug_assert_eq!(result.len(), old_frame.arity);
+
+        self.stack.truncate(old_frame.init_stack_size);
+        self.stack.extend(result);
+
+        Ok(ComputationStatus::Return)
+    }
+
     fn unop<T>(&mut self, f: impl FnOnce(T) -> Option<Val>) -> Result<'store>
     where
         T: TryFrom<Val>,
@@ -291,11 +353,12 @@ impl<'store> InstructionRunner<'store> {
             .locals
             .last()
             .unwrap()
+            .locals
             .get(local.index as usize)
             .unwrap()
     }
 
-    fn return_(&mut self) {
+    fn return_from_func(&mut self) {
         self.locals.pop().unwrap();
     }
 
@@ -306,4 +369,12 @@ impl<'store> InstructionRunner<'store> {
     {
         self.stack.pop().unwrap().try_into().unwrap()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Frame {
+    // The length of the stack when the frame is created
+    init_stack_size: usize,
+    locals: Vec<Val>,
+    arity: usize,
 }

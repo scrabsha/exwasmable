@@ -109,3 +109,64 @@ mod tests {
         assert_eq!(values, EvaluationStatus::Value(vec![55_i32.into()]));
     }
 }
+
+#[cfg(test)]
+mod rust {
+    use crate::{
+        interpreter::{EvaluationStatus, Interpreter},
+        parser,
+        store::Store,
+        values::v,
+    };
+
+    macro_rules! wasm {
+    ($( $code:tt )* ) => {{
+        let code = concat!($( stringify!($code), " ",)*);
+
+        let mut children = ::std::process::Command::new("rustc")
+            .args(["-C", "panic=abort"])
+            .args(["--target", "wasm32-unknown-unknown"])
+            .arg("-")
+            .args(["-o", "-"])
+            .args(["--crate-type", "cdylib"])
+            .stdin(::std::process::Stdio::piped())
+            .stdout(::std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let mut stdin = children.stdin.take().unwrap();
+        ::std::io::Write::write_all(&mut stdin, code.as_bytes()).unwrap();
+        drop(stdin);
+
+        let mut bytes = Vec::new();
+        let mut stdout = children.stdout.take().unwrap();
+        ::std::io::Read::read_to_end(&mut stdout, &mut bytes).unwrap();
+        drop(stdout);
+
+        children.wait().unwrap();
+
+        bytes
+    }};
+}
+
+    #[test]
+    fn add_simple() {
+        let bytecode = wasm! {
+            #[no_mangle]
+            pub fn add(a: u32, b: u32) -> u32 {
+                a.wrapping_add(b)
+            }
+
+        };
+
+        let module = parser::parse_all(&bytecode);
+
+        let mut store = Store::new(module);
+
+        let mut interpreter = Interpreter::new(&mut store);
+
+        let values = interpreter.run("add", [v(41_i32), v(1_i32)]).unwrap();
+
+        assert_eq!(values, EvaluationStatus::Value(vec![v(42_i32)]));
+    }
+}

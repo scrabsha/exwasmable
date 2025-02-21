@@ -1,4 +1,13 @@
-use crate::types::{FuncType, NumType, RefType, ValType};
+use wasmbin::types::ValueType;
+
+use crate::types::{FuncType, RefType};
+
+pub fn v<T>(v: T) -> Val
+where
+    Val: From<T>,
+{
+    Val::from(v)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Num {
@@ -23,13 +32,14 @@ pub enum Val {
 }
 
 impl Val {
-    pub fn default(val_type: ValType) -> Val {
+    pub fn default(val_type: &ValueType) -> Val {
         match val_type {
-            ValType::NumType(NumType::I32) => Val::i32(0),
-            ValType::NumType(NumType::I64) => Val::i64(0),
-            ValType::NumType(NumType::F32) => Val::f32(0.0),
-            ValType::NumType(NumType::F64) => Val::f64(0.0),
-            ValType::RefType(ty) => Val::null(ty),
+            ValueType::V128 => todo!(),
+            ValueType::F64 => 0.0_f64.into(),
+            ValueType::F32 => 0.0_f32.into(),
+            ValueType::I64 => 0_i64.into(),
+            ValueType::I32 => 0_i32.into(),
+            ValueType::Ref(_) => todo!(),
         }
     }
 
